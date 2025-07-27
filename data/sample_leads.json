@@ -1,0 +1,41 @@
+[
+  {
+    "id": "lead_001",
+    "company_name": "Innovate AI Solutions",
+    "website": "https://innovateaisolutions.com",
+    "contact_name": "Alice Smith",
+    "email": "alice.smith@innovateaisolutions.com",
+    "linkedin_profile": "https://www.linkedin.com/in/alicesmith",
+    "industry": "Artificial Intelligence",
+    "role": "Head of AI",
+    "company_size": "50-200",
+    "location": "London, UK",
+    "status": "pending"
+  },
+  {
+    "id": "lead_002",
+    "company_name": "Global Tech Ventures",
+    "website": "https://globaltechventures.io",
+    "contact_name": "Bob Johnson",
+    "email": "bob.johnson@globaltechventures.io",
+    "linkedin_profile": "https://www.linkedin.com/in/bobjohnson",
+    "industry": "Fintech",
+    "role": "CTO",
+    "company_size": "200-500",
+    "location": "New York, USA",
+    "status": "pending"
+  },
+  {
+    "id": "lead_003",
+    "company_name": "Future Robotics Co.",
+    "website": "https://futurerobotics.ai",
+    "contact_name": "Charlie Brown",
+    "email": "charlie.brown@futurerobotics.ai",
+    "linkedin_profile": "https://www.linkedin.com/in/charliebrown",
+    "industry": "Robotics",
+    "role": "CEO",
+    "company_size": "Under 50",
+    "location": "Berlin, Germany",
+    "status": "pending"
+  }
+]
