@@ -1,11 +1,17 @@
 import json
 import os
 import sqlite3
+import datetime # NEW: For timestamps
+import time     # NEW: For sleep (optional, for testing shutdown)
 from flask import Flask, request, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler # NEW: For scheduling
 
 app = Flask(__name__)
 DATABASE = 'leads.db'
-SAMPLE_LEADS_FILE = os.path.join('data', 'sample_leads.json') # This path is for reference for your data file
+SAMPLE_LEADS_FILE = os.path.join('data', 'sample_leads.json')
+
+# Initialize the scheduler
+scheduler = BackgroundScheduler()
 
 def init_db():
     """Initializes the SQLite database."""
@@ -23,7 +29,8 @@ def init_db():
                 role TEXT,
                 company_size TEXT,
                 location TEXT,
-                status TEXT DEFAULT 'pending'
+                status TEXT DEFAULT 'pending',
+                sent_date TEXT -- NEW COLUMN: To store timestamp of last send/followup
             )
         ''')
         conn.commit()
@@ -57,11 +64,12 @@ def ingest_leads():
                     skipped_count += 1
                     continue
 
+                # Insert lead, including a NULL sent_date initially
                 cursor.execute('''
                     INSERT OR IGNORE INTO leads (
                         id, company_name, website, contact_name, email,
-                        linkedin_profile, industry, role, company_size, location, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        linkedin_profile, industry, role, company_size, location, status, sent_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 ''', (
                     lead.get('id'), lead.get('company_name'), lead.get('website'),
                     lead.get('contact_name'), lead.get('email'), lead.get('linkedin_profile'),
@@ -104,6 +112,7 @@ def get_leads():
 def send_outreach(lead_id):
     """
     Simulates sending an outreach email for a specific lead.
+    Records the sent_date.
     """
     with sqlite3.connect(DATABASE) as conn:
         conn.row_factory = sqlite3.Row
@@ -136,26 +145,25 @@ def send_outreach(lead_id):
         Junaid (AI Outreach Pipeline)
         """
 
-        # In a real scenario, this would call Instantly.ai's API
-        # For now, we log it and update status in our local DB
         try:
-            # Store simulated sent email content (optional, but good for tracking)
-            # You might create a new 'sent_emails_log' table for this later if needed
             print(f"--- Simulating Email Send ---")
             print(f"To: {lead['email']}")
             print(f"Subject: {email_subject}")
             print(f"Body:\n{email_body}")
             print(f"-----------------------------")
 
-            # Update lead status to 'sent'
-            cursor.execute('UPDATE leads SET status = ? WHERE id = ?', ('sent', lead_id))
+            # Update lead status and set the sent_date
+            current_time_iso = datetime.datetime.now().isoformat()
+            cursor.execute('UPDATE leads SET status = ?, sent_date = ? WHERE id = ?',
+                           ('sent', current_time_iso, lead_id))
             conn.commit()
 
             return jsonify({
                 "message": f"Outreach email simulated and status updated for lead ID '{lead_id}'.",
                 "status": "sent",
                 "to": lead['email'],
-                "subject": email_subject
+                "subject": email_subject,
+                "sent_date": current_time_iso # Include in response for verification
             }), 200
 
         except sqlite3.Error as e:
@@ -197,9 +205,9 @@ def track_engagement(lead_id, action):
             new_status = 'bounced'
             message = f"Lead '{lead_id}' status updated to 'bounced'. Remove from list."
         elif action == 'replied' and current_status == 'replied':
-             message = f"Lead '{lead_id}' already replied. No change needed."
+            message = f"Lead '{lead_id}' already replied. No change needed."
         else:
-             message = f"Action '{action}' not applicable for current status '{current_status}' for lead '{lead_id}'. Status remains '{current_status}'."
+            message = f"Action '{action}' not applicable for current status '{current_status}' for lead '{lead_id}'. Status remains '{current_status}'."
 
 
         if new_status != current_status:
@@ -212,7 +220,8 @@ def track_engagement(lead_id, action):
 def send_followup(lead_id):
     """
     Simulates sending a follow-up email for a specific lead,
-    only if their status is 'opened' or 'sent'.
+    only if their status is 'sent' or 'opened'.
+    Also updates sent_date.
     """
     with sqlite3.connect(DATABASE) as conn:
         conn.row_factory = sqlite3.Row
@@ -254,15 +263,18 @@ def send_followup(lead_id):
             print(f"Body:\n{followup_body}")
             print(f"--------------------------------------")
 
-            # Update lead status to 'followup_sent'
-            cursor.execute('UPDATE leads SET status = ? WHERE id = ?', ('followup_sent', lead_id))
+            # Update lead status to 'followup_sent' and update sent_date
+            current_time_iso = datetime.datetime.now().isoformat()
+            cursor.execute('UPDATE leads SET status = ?, sent_date = ? WHERE id = ?',
+                           ('followup_sent', current_time_iso, lead_id))
             conn.commit()
 
             return jsonify({
                 "message": f"Follow-up email simulated and status updated for lead ID '{lead_id}'.",
                 "status": "followup_sent",
                 "to": lead['email'],
-                "subject": followup_subject
+                "subject": followup_subject,
+                "sent_date": current_time_iso # Include in response for verification
             }), 200
 
         except sqlite3.Error as e:
@@ -270,6 +282,108 @@ def send_followup(lead_id):
         except Exception as e:
             return jsonify({"error": f"An unexpected error occurred during simulated follow-up send for lead {lead_id}: {e}"}), 500
 
+
+# NEW FUNCTION: Automated Follow-up Check
+def automated_followup_check():
+    """
+    This function is run by the scheduler.
+    It checks for leads that are 'sent' or 'opened' but haven't been followed up
+    within a certain timeframe (e.g., 1 minute for testing).
+    """
+    print("\n--- Running Automated Follow-up Check ---")
+    followup_threshold_seconds = 60 # FOR TESTING: 1 minute (60 seconds)
+    # For a real application, you'd use something like datetime.timedelta(days=3)
+
+    with sqlite3.connect(DATABASE) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Fetch leads that are 'sent' or 'opened' and have a sent_date
+        cursor.execute("SELECT * FROM leads WHERE status IN ('sent', 'opened') AND sent_date IS NOT NULL")
+        leads_to_check = cursor.fetchall()
+
+        for lead in leads_to_check:
+            try:
+                # Convert ISO format string back to datetime object
+                last_sent_time = datetime.datetime.fromisoformat(lead['sent_date'])
+                time_since_last_send = datetime.datetime.now() - last_sent_time
+
+                # Check if enough time has passed for a follow-up
+                if time_since_last_send.total_seconds() >= followup_threshold_seconds:
+                    print(f"Attempting automated follow-up for lead: {lead['id']} ({lead['contact_name']})")
+                    # IMPORTANT: We are calling the core logic directly here, not the Flask route.
+                    # This avoids HTTP request overhead.
+                    send_followup_internal(lead['id'], conn, cursor) # Pass conn and cursor
+                else:
+                    print(f"Lead {lead['id']} not yet due for follow-up. Time remaining: {followup_threshold_seconds - time_since_last_send.total_seconds():.0f}s")
+            except Exception as e:
+                print(f"Error processing lead {lead['id']} for automated follow-up: {e}")
+    print("--- Automated Follow-up Check Complete ---\n")
+
+# NEW HELPER FUNCTION: Internal send_followup logic
+# We create a new internal function to avoid making an HTTP request from the scheduler.
+# This function reuses the core logic of send_followup but takes existing conn/cursor.
+def send_followup_internal(lead_id, conn, cursor):
+    """
+    Internal function to send a follow-up, used by the scheduler.
+    Assumes conn and cursor are already provided.
+    """
+    cursor.execute('SELECT * FROM leads WHERE id = ?', (lead_id,))
+    lead = cursor.fetchone()
+
+    if not lead:
+        print(f"Error: Lead with ID '{lead_id}' not found for internal follow-up.")
+        return
+
+    if lead['status'] not in ['sent', 'opened']:
+        print(f"Info: Cannot send internal follow-up. Lead '{lead_id}' status is '{lead['status']}'.")
+        return
+
+    followup_subject = f"Following up: {lead['contact_name']} at {lead['company_name']}"
+    followup_body = f"""
+    Hi {lead['contact_name']},
+
+    Just wanted to gently follow up on my previous email. I know you're busy, but I genuinely believe that our AI Outreach Pipeline could bring significant value to {lead['company_name']}.
+
+    If now isn't the best time, perhaps you could suggest a better moment to connect?
+
+    Looking forward to hearing from you.
+
+    Best regards,
+
+    Junaid (AI Outreach Pipeline)
+    """
+    try:
+        print(f"--- Simulating Automated Follow-up for {lead['contact_name']} ---")
+        print(f"To: {lead['email']}")
+        print(f"Subject: {followup_subject}")
+        print(f"Body:\n{followup_body}")
+        print(f"--------------------------------------")
+
+        current_time_iso = datetime.datetime.now().isoformat()
+        cursor.execute('UPDATE leads SET status = ?, sent_date = ? WHERE id = ?',
+                       ('followup_sent', current_time_iso, lead_id))
+        conn.commit()
+        print(f"Automated follow-up successful for lead {lead_id}. Status updated to 'followup_sent'.")
+
+    except sqlite3.Error as e:
+        print(f"Error: Database error updating status for lead {lead_id} during automated follow-up: {e}")
+    except Exception as e:
+        print(f"Error: An unexpected error occurred during automated follow-up for lead {lead_id}: {e}")
+
 if __name__ == '__main__':
     init_db() # Ensure DB is set up before running the app
-    app.run(debug=True, port=5000)
+
+    # NEW: Schedule the automated follow-up job
+    # We'll run it every 10 seconds for testing purposes.
+    # In a real app, this might be once every few hours or daily.
+    scheduler.add_job(automated_followup_check, 'interval', seconds=10)
+    scheduler.start()
+    print("Scheduler started. Automated follow-up checks will run every 10 seconds.")
+
+    try:
+        app.run(debug=True, port=5000)
+    except (KeyboardInterrupt, SystemExit):
+        # Shut down the scheduler when the app stops
+        scheduler.shutdown()
+        print("Scheduler shut down gracefully.")
